@@ -1,6 +1,5 @@
 'use strict';
 const path  = require('path');
-const sharp = require('sharp');
 const { menuItemRepo, invoiceRepo, stockItemRepo } = require('../repositories/repositories');
 const userRepo    = require('../repositories/user.repository');
 const { sequelize } = require('../models');
@@ -53,9 +52,21 @@ class MenuService {
   }
 
   async _processImage(file) {
-    const filename = `menu_${Date.now()}.webp`;
+    // Lazy-load sharp so the server still starts if native bindings are missing
+    let sharp;
+    try { sharp = require('sharp'); } catch (_) { sharp = null; }
+
+    const ext      = sharp ? 'webp' : path.extname(file.originalname).slice(1) || 'jpg';
+    const filename = `menu_${Date.now()}.${ext}`;
     const dest     = path.join(process.env.UPLOAD_DIR || 'uploads', filename);
-    await sharp(file.path).resize(400, 400, { fit: 'cover' }).webp({ quality: 80 }).toFile(dest);
+
+    if (sharp) {
+      await sharp(file.path).resize(400, 400, { fit: 'cover' }).webp({ quality: 80 }).toFile(dest);
+    } else {
+      // sharp not available – just move the uploaded file as-is
+      const fs = require('fs');
+      fs.renameSync(file.path, dest);
+    }
     return `/uploads/${filename}`;
   }
 }

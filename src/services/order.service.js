@@ -58,7 +58,6 @@ class OrderService {
       }, { transaction: t });
 
       // Bulk-create order items (price snapshot)
-      await order.createItems = undefined;
       const { OrderItem } = require('../models');
       await OrderItem.bulkCreate(
         resolvedItems.map(({ menuItem, qty, subtotal }) => ({

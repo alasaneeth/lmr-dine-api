@@ -44,6 +44,15 @@ async function bootstrap() {
 }
 
 bootstrap().catch((err) => {
-  console.error('Failed to start server:', err);
+  console.error('\n=========================================');
+  console.error('  SERVER FAILED TO START');
+  console.error('=========================================');
+  console.error('  Reason:', err.message);
+  if (err.original) console.error('  DB Error:', err.original.message);
+  console.error('\n  Common fixes:');
+  console.error('  1. Make sure MySQL is running');
+  console.error('  2. Check DB_HOST / DB_USER / DB_PASSWORD in your .env');
+  console.error('  3. Run: mysql -u root -p -e "CREATE DATABASE restoms_db;"');
+  console.error('=========================================\n');
   process.exit(1);
 });
