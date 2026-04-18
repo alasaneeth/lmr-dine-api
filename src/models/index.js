@@ -69,7 +69,12 @@ Notification.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
 // ── Test connection & sync in test env ───────────────────────────────────────
 const connectDB = async () => {
   await sequelize.authenticate();
-  logger.info('MySQL connection established via Sequelize');
+  logger.info('✓ MySQL connection established');
+
+  if (env === 'development') {
+    await sequelize.sync({ alter: true }); // ← creates missing tables, adds missing columns
+    logger.info('✓ All tables synced successfully');
+  }
 };
 
 module.exports = {
