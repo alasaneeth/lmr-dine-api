@@ -1,0 +1,29 @@
+{
+  "development": {
+    "username": "${DB_USER}",
+    "password": "${DB_PASS}",
+    "database": "${DB_NAME}",
+    "host":     "${DB_HOST}",
+    "port":     3306,
+    "dialect":  "mysql",
+    "seederStorage": "sequelize",
+    "migrationStorage": "sequelize"
+  },
+  "test": {
+    "username": "root",
+    "password": "test",
+    "database": "rms_test",
+    "host":     "127.0.0.1",
+    "dialect":  "mysql"
+  },
+  "production": {
+    "username": "${DB_USER}",
+    "password": "${DB_PASS}",
+    "database": "${DB_NAME}",
+    "host":     "${DB_HOST}",
+    "dialect":  "mysql",
+    "dialectOptions": {
+      "ssl": { "require": true, "rejectUnauthorized": false }
+    }
+  }
+}
