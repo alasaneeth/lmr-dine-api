@@ -3,24 +3,56 @@ const { DataTypes } = require('sequelize');
 
 module.exports = (sequelize) =>
   sequelize.define('Order', {
-    id:         { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
-    order_no:   { type: DataTypes.STRING(20), allowNull: false, unique: true },
-    user_id:    { type: DataTypes.UUID, allowNull: true },
-    table_no:   { type: DataTypes.STRING(20), allowNull: false },
-    customer_name: { type: DataTypes.STRING(100), allowNull: true },
-    status: {
-      type: DataTypes.ENUM('pending', 'preparing', 'ready', 'served', 'paid', 'cancelled'),
-      defaultValue: 'pending',
+    id: {
+      type:          DataTypes.INTEGER.UNSIGNED,
+      autoIncrement: true,
+      primaryKey:    true,
     },
-    total:      { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
-    notes:      { type: DataTypes.TEXT, allowNull: true },
-    placed_at:  { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    orderNumber: {
+      type:      DataTypes.STRING(20),
+      allowNull: false,
+      unique:    true,
+    },
+    userId: {
+      type:      DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+    },
+    customerId: {
+      type:      DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+    },
+    tableNumber: {
+      type:         DataTypes.STRING(20),
+      allowNull:    true,
+      defaultValue: 'Takeaway',
+    },
+    status: {
+      type:         DataTypes.ENUM('pending','preparing','ready','served','paid','cancelled'),
+      defaultValue: 'pending',
+      allowNull:    false,
+    },
+    subtotal: {
+      type:         DataTypes.DECIMAL(10, 2),
+      allowNull:    false,
+      defaultValue: 0,
+    },
+    total: {
+      type:         DataTypes.DECIMAL(10, 2),
+      allowNull:    false,
+      defaultValue: 0,
+    },
+    notes: {
+      type:      DataTypes.TEXT,
+      allowNull: true,
+    },
   }, {
-    tableName: 'orders',
+    tableName:  'orders',
+    timestamps: true,
     indexes: [
       { fields: ['status'] },
       { fields: ['user_id'] },
-      { fields: ['placed_at'] },
-      { unique: true, fields: ['order_no'] },
+      { fields: ['customer_id'] },
+      { fields: ['order_number'] },
+      { fields: ['created_at'] },
     ],
   });

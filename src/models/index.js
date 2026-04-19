@@ -1,93 +1,60 @@
 'use strict';
-const { Sequelize } = require('sequelize');
-const config = require('../config/database');
-const { logger } = require('../utils/logger');
+const { sequelize } = require('../config/database');
 
-const env = process.env.NODE_ENV || 'development';
-const dbConfig = config[env];
+// ── Import models ─────────────────────────────────────────────────────────────
+const User         = require('./User')(sequelize);
+const RefreshToken = require('./RefreshToken')(sequelize);
+const MenuItem     = require('./MenuItem')(sequelize);
+const Order        = require('./Order')(sequelize);
+const OrderItem    = require('./OrderItem')(sequelize);
+const Invoice      = require('./Invoice')(sequelize);
+const StockItem    = require('./StockItem')(sequelize);
+const Customer     = require('./Customer')(sequelize);
+const AuditLog     = require('./AuditLog')(sequelize);
 
-const sequelize = new Sequelize(
-  dbConfig.database,
-  dbConfig.username,
-  dbConfig.password,
-  {
-    host:           dbConfig.host,
-    port:           dbConfig.port,
-    dialect:        dbConfig.dialect,
-    pool:           dbConfig.pool,
-    logging:        dbConfig.logging,
-    define:         dbConfig.define,
-    dialectOptions: dbConfig.dialectOptions || {},
-  }
-);
-
-// ── Import models ────────────────────────────────────────────────────────────
-const User          = require('./User')(sequelize);
-const MenuItem      = require('./MenuItem')(sequelize);
-const Category      = require('./Category')(sequelize);
-const Order         = require('./Order')(sequelize);
-const OrderItem     = require('./OrderItem')(sequelize);
-const Invoice       = require('./Invoice')(sequelize);
-const StockItem     = require('./StockItem')(sequelize);
-const RefreshToken  = require('./RefreshToken')(sequelize);
-const Notification  = require('./Notification')(sequelize);
-
-// ── Associations ─────────────────────────────────────────────────────────────
-
-// Category ↔ MenuItem
-Category.hasMany(MenuItem, { foreignKey: 'category_id', as: 'menuItems' });
-MenuItem.belongsTo(Category, { foreignKey: 'category_id', as: 'category' });
-
-// User ↔ Order
-User.hasMany(Order, { foreignKey: 'user_id', as: 'orders' });
-Order.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
-
-// Order ↔ OrderItem
-Order.hasMany(OrderItem, { foreignKey: 'order_id', as: 'items', onDelete: 'CASCADE' });
-OrderItem.belongsTo(Order, { foreignKey: 'order_id', as: 'order' });
-
-// MenuItem ↔ OrderItem
-MenuItem.hasMany(OrderItem, { foreignKey: 'menu_item_id', as: 'orderItems' });
-OrderItem.belongsTo(MenuItem, { foreignKey: 'menu_item_id', as: 'menuItem' });
-
-// Order ↔ Invoice (1-to-1)
-Order.hasOne(Invoice, { foreignKey: 'order_id', as: 'invoice' });
-Invoice.belongsTo(Order, { foreignKey: 'order_id', as: 'order' });
-
-// User ↔ Invoice (cashier who processed)
-User.hasMany(Invoice, { foreignKey: 'cashier_id', as: 'processedInvoices' });
-Invoice.belongsTo(User, { foreignKey: 'cashier_id', as: 'cashier' });
+// ── Associations ──────────────────────────────────────────────────────────────
 
 // User ↔ RefreshToken
-User.hasMany(RefreshToken, { foreignKey: 'user_id', as: 'refreshTokens', onDelete: 'CASCADE' });
-RefreshToken.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
+User.hasMany(RefreshToken, { foreignKey: 'userId', onDelete: 'CASCADE' });
+RefreshToken.belongsTo(User, { foreignKey: 'userId' });
 
-// User ↔ Notification
-User.hasMany(Notification, { foreignKey: 'user_id', as: 'notifications' });
-Notification.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
+// User → Order (placed by)
+User.hasMany(Order, { foreignKey: 'userId', onDelete: 'SET NULL' });
+Order.belongsTo(User, { as: 'placedBy', foreignKey: 'userId' });
 
-// ── Test connection & sync in test env ───────────────────────────────────────
-const connectDB = async () => {
-  await sequelize.authenticate();
-  logger.info('✓ MySQL connection established');
+// Customer → Order (optional link)
+Customer.hasMany(Order, { foreignKey: 'customerId', onDelete: 'SET NULL' });
+Order.belongsTo(Customer, { as: 'customer', foreignKey: 'customerId' });
 
-  if (env === 'development') {
-    await sequelize.sync({ alter: true }); // ← creates missing tables, adds missing columns
-    logger.info('✓ All tables synced successfully');
-  }
-};
+// Order ↔ OrderItem
+Order.hasMany(OrderItem, { foreignKey: 'orderId', as: 'items', onDelete: 'CASCADE' });
+OrderItem.belongsTo(Order, { foreignKey: 'orderId' });
+
+// MenuItem ↔ OrderItem
+MenuItem.hasMany(OrderItem, { foreignKey: 'menuItemId', onDelete: 'RESTRICT' });
+OrderItem.belongsTo(MenuItem, { as: 'menuItem', foreignKey: 'menuItemId' });
+
+// Order → Invoice (1:1)
+Order.hasOne(Invoice, { foreignKey: 'orderId', onDelete: 'RESTRICT' });
+Invoice.belongsTo(Order, { foreignKey: 'orderId' });
+
+// Customer → Invoice
+Customer.hasMany(Invoice, { foreignKey: 'customerId', onDelete: 'SET NULL' });
+Invoice.belongsTo(Customer, { as: 'customer', foreignKey: 'customerId' });
+
+// User → AuditLog
+User.hasMany(AuditLog, { foreignKey: 'userId', onDelete: 'SET NULL' });
+AuditLog.belongsTo(User, { foreignKey: 'userId' });
 
 module.exports = {
   sequelize,
-  Sequelize,
-  connectDB,
   User,
+  RefreshToken,
   MenuItem,
-  Category,
   Order,
   OrderItem,
   Invoice,
   StockItem,
-  RefreshToken,
-  Notification,
+  Customer,
+  AuditLog,
 };

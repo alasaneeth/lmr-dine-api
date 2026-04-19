@@ -1,161 +1,143 @@
 'use strict';
-const bcrypt              = require('bcryptjs');
-const { authenticator }   = require('otplib');
-const QRCode              = require('qrcode');
-const userRepo            = require('../repositories/user.repository');
-const { refreshTokenRepo } = require('../repositories/repositories');
-const {
-  signAccessToken, signRefreshToken,
-  verifyRefreshToken, expiryToDate, REFRESH_EXPIRY,
-} = require('../utils/jwt');
-const {
-  AuthenticationError, ConflictError, BadRequestError,
-} = require('../utils/errors');
-const { logger } = require('../utils/logger');
+const crypto      = require('crypto');
+const { v4: uuidv4 } = require('uuid');
+const bcrypt      = require('bcryptjs');
+const { totp }    = require('otplib');
+const QRCode      = require('qrcode');
 
-const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS || '12', 10);
+const userRepo    = require('../repositories/user.repository');
+const { RefreshToken, AuditLog } = require('../models');
+const { hash, compare }          = require('../utils/password');
+const { signAccess, signRefresh, verifyRefresh } = require('../utils/jwt');
+const AppError    = require('../errors/AppError');
+const cfg         = require('../config/env');
 
-class AuthService {
+// ── helpers ───────────────────────────────────────────────────────────────────
+const hashToken  = (t) => crypto.createHash('sha256').update(t).digest('hex');
+const parseDays  = (str) => {
+  const match = str.match(/^(\d+)d$/);
+  return match ? parseInt(match[1], 10) * 24 * 3600 * 1000 : 7 * 24 * 3600 * 1000;
+};
 
-  // ── Register ──────────────────────────────────────────────────────────────
-  async register({ name, email, password, role = 'customer' }) {
-    const existing = await userRepo.findByEmailPublic(email);
-    if (existing) throw new ConflictError('Email already registered');
+async function issueTokenPair(user, meta = {}) {
+  const payload     = { sub: user.id, role: user.role };
+  const accessToken = signAccess(payload);
+  const rawRefresh  = uuidv4();
+  const family      = meta.family || uuidv4();
 
-    const password_hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    const initials = name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 4);
+  await RefreshToken.create({
+    userId:    user.id,
+    tokenHash: hashToken(rawRefresh),
+    family,
+    expiresAt: new Date(Date.now() + parseDays(cfg.jwt.refreshExpires)),
+    userAgent: meta.userAgent,
+    ip:        meta.ip,
+  });
 
-    const user = await userRepo.create({ name, email, password_hash, role, initials });
-    logger.info({ event: 'user.registered', userId: user.id, role });
-    return this._userPublic(user);
-  }
-
-  // ── Login ─────────────────────────────────────────────────────────────────
-  async login({ email, password, mfaToken }, { userAgent, ip } = {}) {
-    // Use withPassword scope to retrieve hashed password
-    const user = await userRepo.findByEmail(email);
-    if (!user) throw new AuthenticationError('Invalid credentials');
-    if (user.status !== 'active') throw new AuthenticationError('Account is not active');
-
-    const valid = await bcrypt.compare(password, user.password_hash);
-    if (!valid) throw new AuthenticationError('Invalid credentials');
-
-    // MFA check
-    if (user.mfa_enabled) {
-      if (!mfaToken) {
-        return { requiresMfa: true };
-      }
-      const secret = user.mfa_secret;
-      const ok = authenticator.verify({ token: mfaToken, secret });
-      if (!ok) throw new AuthenticationError('Invalid MFA token');
-    }
-
-    await userRepo.updateLastLogin(user.id);
-
-    const tokens = await this._issueTokenPair(user, { userAgent, ip });
-    logger.info({ event: 'user.login', userId: user.id });
-    return { user: this._userPublic(user), ...tokens };
-  }
-
-  // ── Refresh tokens ────────────────────────────────────────────────────────
-  async refresh(rawRefreshToken, { userAgent, ip } = {}) {
-    // Verify JWT structure first
-    const payload = verifyRefreshToken(rawRefreshToken);
-
-    // Verify it exists in DB and isn't revoked
-    const tokenHash = await refreshTokenRepo.hashToken(rawRefreshToken);
-    // We stored a hash, so we need to find by user then compare
-    const storedTokens = await refreshTokenRepo.findAll({
-      where: { user_id: payload.sub, is_revoked: false },
-    });
-
-    let storedToken = null;
-    for (const t of storedTokens) {
-      const match = await refreshTokenRepo.verifyToken(rawRefreshToken, t.token_hash);
-      if (match) { storedToken = t; break; }
-    }
-
-    if (!storedToken || storedToken.is_revoked || new Date() > storedToken.expires_at) {
-      // Token reuse detected – revoke entire family
-      await refreshTokenRepo.revokeAllForUser(payload.sub);
-      throw new AuthenticationError('Refresh token reuse detected — please log in again');
-    }
-
-    const user = await userRepo.findById(payload.sub);
-    if (user.status !== 'active') throw new AuthenticationError('Account is not active');
-
-    // Rotate: revoke old, issue new pair
-    await storedToken.update({ is_revoked: true, replaced_by: 'rotation' });
-
-    const tokens = await this._issueTokenPair(user, { userAgent, ip });
-    return { user: this._userPublic(user), ...tokens };
-  }
-
-  // ── Logout ────────────────────────────────────────────────────────────────
-  async logout(userId) {
-    await refreshTokenRepo.revokeAllForUser(userId);
-    logger.info({ event: 'user.logout', userId });
-  }
-
-  // ── MFA Setup ─────────────────────────────────────────────────────────────
-  async setupMfa(userId) {
-    const secret  = authenticator.generateSecret();
-    const user    = await userRepo.findById(userId);
-    await userRepo.model.scope('withPassword').findByPk(userId)
-      .then((u) => u.update({ mfa_secret: secret }));
-
-    const otpAuthUrl = authenticator.keyuri(user.email, process.env.MFA_ISSUER || 'RestoMS', secret);
-    const qrCode     = await QRCode.toDataURL(otpAuthUrl);
-    return { secret, qrCode, otpAuthUrl };
-  }
-
-  async enableMfa(userId, token) {
-    const raw  = await userRepo.model.scope('withPassword').findByPk(userId);
-    const ok   = authenticator.verify({ token, secret: raw.mfa_secret });
-    if (!ok) throw new BadRequestError('Invalid MFA token');
-    await raw.update({ mfa_enabled: true });
-    return { mfaEnabled: true };
-  }
-
-  async disableMfa(userId) {
-    await userRepo.model.scope('withPassword').findByPk(userId)
-      .then((u) => u.update({ mfa_enabled: false, mfa_secret: null }));
-    return { mfaEnabled: false };
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
-  async _issueTokenPair(user, { userAgent, ip } = {}) {
-    const accessPayload = {
-      sub:   user.id,
-      email: user.email,
-      role:  user.role,
-      name:  user.name,
-    };
-    const accessToken  = signAccessToken(accessPayload);
-    const rawRefresh   = signRefreshToken(user.id);
-    const tokenHash    = await refreshTokenRepo.hashToken(rawRefresh);
-
-    await refreshTokenRepo.create({
-      user_id:    user.id,
-      token_hash: tokenHash,
-      expires_at: expiryToDate(REFRESH_EXPIRY),
-      user_agent: userAgent,
-      ip_address: ip,
-    });
-
-    return { accessToken, refreshToken: rawRefresh };
-  }
-
-  _userPublic(user) {
-    return {
-      id:       user.id,
-      name:     user.name,
-      email:    user.email,
-      role:     user.role,
-      initials: user.initials,
-      status:   user.status,
-    };
-  }
+  return { accessToken, refreshToken: rawRefresh };
 }
 
-module.exports = new AuthService();
+// ── Auth Service ──────────────────────────────────────────────────────────────
+const authService = {
+  async register(data) {
+    const existing = await userRepo.findByEmail(data.email);
+    if (existing) throw AppError.conflict('Email already registered');
+    const passwordHash = await hash(data.password);
+    const user = await userRepo.create({ ...data, passwordHash });
+    return user.toSafeJSON();
+  },
+
+  async login({ email, password, mfaToken }, meta = {}) {
+    const user = await userRepo.findByEmail(email);
+    if (!user) throw AppError.unauthorized('Invalid credentials');
+
+    const valid = await compare(password, user.passwordHash);
+    if (!valid)  throw AppError.unauthorized('Invalid credentials');
+
+    if (user.status !== 'active') throw AppError.forbidden('Account is inactive');
+
+    // MFA check
+    if (user.mfaEnabled) {
+      if (!mfaToken) return { requiresMfa: true };
+      const ok = totp.check(mfaToken, user.mfaSecret);
+      if (!ok) throw AppError.unauthorized('Invalid MFA token');
+    }
+
+    user.lastLoginAt = new Date();
+    await user.save();
+
+    await AuditLog.create({ userId: user.id, action: 'USER_LOGIN', ip: meta.ip, userAgent: meta.userAgent });
+
+    const tokens = await issueTokenPair(user, meta);
+    return { user: user.toSafeJSON(), ...tokens };
+  },
+
+  async refresh(rawToken, meta = {}) {
+    if (!rawToken) throw AppError.unauthorized('Refresh token missing');
+    const tokenHash = hashToken(rawToken);
+
+    const stored = await RefreshToken.findOne({ where: { tokenHash } });
+    if (!stored || stored.revokedAt || new Date() > stored.expiresAt) {
+      // Token reuse detection – revoke entire family
+      if (stored) {
+        await RefreshToken.update(
+          { revokedAt: new Date() },
+          { where: { family: stored.family } }
+        );
+      }
+      throw AppError.unauthorized('Refresh token invalid or expired');
+    }
+
+    // Rotate: revoke old, issue new in same family
+    stored.revokedAt = new Date();
+    await stored.save();
+
+    const user = await userRepo.findByEmail((await stored.getUser()).email);
+    const tokens = await issueTokenPair(user, { ...meta, family: stored.family });
+    return { user: user.toSafeJSON(), ...tokens };
+  },
+
+  async logout(rawToken) {
+    if (!rawToken) return;
+    const tokenHash = hashToken(rawToken);
+    await RefreshToken.update({ revokedAt: new Date() }, { where: { tokenHash } });
+  },
+
+  async me(userId) {
+    const user = await userRepo.findById(userId, {
+      attributes: { exclude: ['passwordHash', 'mfaSecret'] },
+    });
+    return { user: user.toJSON() };
+  },
+
+  async setupMfa(userId) {
+    const user   = await userRepo.findById(userId);
+    if (user.mfaEnabled) throw AppError.conflict('MFA is already enabled');
+    const secret = totp.generateSecret();
+    user.mfaSecret = secret;
+    await user.save();
+    const otpauth = totp.keyuri(user.email, 'RMS', secret);
+    const qrCode  = await QRCode.toDataURL(otpauth);
+    return { secret, qrCode };
+  },
+
+  async enableMfa(userId, token) {
+    const user = await userRepo.findById(userId);
+    if (!user.mfaSecret) throw AppError.badRequest('Run MFA setup first');
+    const ok = totp.check(token, user.mfaSecret);
+    if (!ok) throw AppError.unauthorized('Invalid TOTP token');
+    user.mfaEnabled = true;
+    await user.save();
+    return { mfaEnabled: true };
+  },
+
+  async disableMfa(userId) {
+    const user = await userRepo.findById(userId);
+    user.mfaEnabled = false;
+    user.mfaSecret  = null;
+    await user.save();
+    return { mfaEnabled: false };
+  },
+};
+
+module.exports = authService;

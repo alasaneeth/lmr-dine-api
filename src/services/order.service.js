@@ -1,127 +1,130 @@
 'use strict';
-const { orderRepo, menuItemRepo, notificationRepo } = require('../repositories/repositories');
-const { sequelize }      = require('../models');
-const { NotFoundError, BadRequestError } = require('../utils/errors');
-const { parsePagination } = require('../utils/pagination');
-const { logger }         = require('../utils/logger');
+const { sequelize }  = require('../config/database');
+const orderRepo      = require('../repositories/order.repository');
+const menuRepo       = require('../repositories/menu.repository');
+const AppError       = require('../errors/AppError');
+const { Order, OrderItem, AuditLog } = require('../models');
 
-const STATUS_FLOW = ['pending', 'preparing', 'ready', 'served', 'paid', 'cancelled'];
-const NEXT_STATUS = { pending: 'preparing', preparing: 'ready', ready: 'served', served: 'paid' };
+// Status transition machine
+const NEXT_STATUS = {
+  pending:   'preparing',
+  preparing: 'ready',
+  ready:     'served',
+  served:    'paid',
+};
 
-class OrderService {
+const orderService = {
+  async list(query) {
+    return orderRepo.list(query);
+  },
 
-  async getOrders(query) {
-    const { page, limit, offset } = parsePagination(query);
-    const { rows, count } = await orderRepo.findPaginated({
-      offset, limit,
-      status: query.status,
-      userId: query.userId,
-      search: query.search,
-    });
-    return { orders: rows, total: count, page, limit };
-  }
+  async myOrders(userId, query) {
+    return orderRepo.list({ ...query, userId });
+  },
 
-  async getOrderById(id) {
-    return orderRepo.findWithItems(id);
-  }
+  async getById(id) {
+    return orderRepo.findDetail(id);
+  },
 
-  async createOrder({ userId, tableNo, customerName, notes, items }, io = null) {
-    if (!items || items.length === 0) throw new BadRequestError('Order must contain at least one item');
+  async create(data, userId, io) {
+    const { items, tableNumber, customerId, notes } = data;
 
-    return sequelize.transaction(async (t) => {
-      // Validate & reserve stock
-      let total = 0;
-      const resolvedItems = [];
+    // Validate all menu items exist and have stock
+    const menuItems = await Promise.all(
+      items.map((i) => menuRepo.findById(i.menuItemId))
+    );
 
-      for (const line of items) {
-        const menuItem = await menuItemRepo.findById(line.menuItemId);
-        if (!menuItem.is_available) throw new BadRequestError(`${menuItem.name} is not available`);
-        if (menuItem.stock < line.qty) throw new BadRequestError(`Insufficient stock for ${menuItem.name}`);
+    for (let i = 0; i < items.length; i++) {
+      const mi = menuItems[i];
+      if (!mi.isActive)        throw AppError.badRequest(`'${mi.name}' is not available`);
+      if (mi.stock < items[i].qty)
+        throw AppError.unprocessable(`Insufficient stock for '${mi.name}' (available: ${mi.stock})`);
+    }
 
-        // Decrement stock
-        await menuItemRepo.updateById(menuItem.id, { stock: menuItem.stock - line.qty }, { transaction: t });
+    const t = await sequelize.transaction();
+    try {
+      const orderNumber = await orderRepo.nextOrderNumber();
+      const subtotal    = items.reduce((sum, it, idx) => sum + menuItems[idx].price * it.qty, 0);
 
-        const subtotal = parseFloat(menuItem.price) * line.qty;
-        total += subtotal;
-        resolvedItems.push({ menuItem, qty: line.qty, subtotal });
-      }
-
-      const order_no = orderRepo.generateOrderNo();
-      const order = await orderRepo.create({
-        order_no,
-        user_id:       userId,
-        table_no:      tableNo,
-        customer_name: customerName,
-        notes,
-        total:         total.toFixed(2),
-        status:        'pending',
-      }, { transaction: t });
-
-      // Bulk-create order items (price snapshot)
-      const { OrderItem } = require('../models');
-      await OrderItem.bulkCreate(
-        resolvedItems.map(({ menuItem, qty, subtotal }) => ({
-          order_id:     order.id,
-          menu_item_id: menuItem.id,
-          name:         menuItem.name,
-          price:        menuItem.price,
-          qty,
-          subtotal,
-        })),
+      const order = await Order.create(
+        { orderNumber, userId, customerId, tableNumber, notes, subtotal, total: subtotal, status: 'pending' },
         { transaction: t }
       );
 
-      logger.info({ event: 'order.created', orderId: order.id, total });
+      const orderItemsData = items.map((it, idx) => ({
+        orderId:    order.id,
+        menuItemId: it.menuItemId,
+        name:       menuItems[idx].name,
+        price:      menuItems[idx].price,
+        qty:        it.qty,
+        lineTotal:  menuItems[idx].price * it.qty,
+      }));
 
-      // Real-time notification to kitchen staff
-      if (io) {
-        io.to('kitchen').emit('order:new', {
-          orderId:  order.id,
-          orderNo:  order_no,
-          tableNo,
-          total,
-        });
-        await notificationRepo.create({
-          user_id: null, // broadcast
-          type:    'ORDER_NEW',
-          title:   'New Order',
-          message: `Order ${order_no} placed for ${tableNo}`,
-          data:    { orderId: order.id },
-        }, { transaction: t });
+      await OrderItem.bulkCreate(orderItemsData, { transaction: t });
+
+      // Deduct stock
+      for (let i = 0; i < items.length; i++) {
+        await menuRepo.adjustStock(items[i].menuItemId, -items[i].qty);
       }
 
-      return orderRepo.findWithItems(order.id);
-    });
-  }
+      await AuditLog.create({ userId, action: 'ORDER_CREATED', entity: 'Order', entityId: order.id }, { transaction: t });
+      await t.commit();
 
-  async advanceStatus(id, io = null) {
-    const order = await orderRepo.findById(id);
+      const full = await orderRepo.findDetail(order.id);
+
+      // Real-time broadcast
+      if (io) {
+        io.emit('order:new', { orderId: order.id, orderNumber, tableNumber, status: 'pending' });
+        io.emit('notification', { type: 'NEW_ORDER', message: `New order ${orderNumber} placed`, orderId: order.id });
+      }
+
+      return full;
+    } catch (err) {
+      await t.rollback();
+      throw err;
+    }
+  },
+
+  async advance(id, userId, io) {
+    const order = await orderRepo.findDetail(id);
     const next  = NEXT_STATUS[order.status];
-    if (!next) throw new BadRequestError(`Order cannot be advanced from status: ${order.status}`);
+    if (!next) throw AppError.badRequest(`Order cannot be advanced from status '${order.status}'`);
 
-    await order.update({ status: next });
-
-    if (io) {
-      io.to('kitchen').to('waiters').emit('order:status', {
-        orderId: order.id, orderNo: order.order_no, status: next,
-      });
-    }
-    logger.info({ event: 'order.advanced', orderId: id, from: order.status, to: next });
-    return order;
-  }
-
-  async cancelOrder(id, io = null) {
-    const order = await orderRepo.findById(id);
-    if (['paid', 'cancelled'].includes(order.status)) {
-      throw new BadRequestError('Order cannot be cancelled in its current state');
-    }
-    await order.update({ status: 'cancelled' });
+    order.status = next;
+    await order.save();
+    await AuditLog.create({ userId, action: 'ORDER_ADVANCED', entity: 'Order', entityId: id, meta: { from: order.previous('status'), to: next } });
 
     if (io) {
-      io.to('kitchen').emit('order:cancelled', { orderId: order.id, orderNo: order.order_no });
+      io.emit('order:updated', { orderId: id, status: next });
+      io.emit('notification', { type: 'ORDER_UPDATE', message: `Order #${order.orderNumber} is now ${next}`, orderId: id });
     }
-    return order;
-  }
-}
 
-module.exports = new OrderService();
+    return order;
+  },
+
+  async cancel(id, userId, io) {
+    const order = await orderRepo.findDetail(id);
+    if (['paid', 'cancelled'].includes(order.status))
+      throw AppError.badRequest(`Cannot cancel an order with status '${order.status}'`);
+
+    const t = await sequelize.transaction();
+    try {
+      // Restore stock
+      for (const item of order.items) {
+        await menuRepo.adjustStock(item.menuItemId, +item.qty);
+      }
+      order.status = 'cancelled';
+      await order.save({ transaction: t });
+      await AuditLog.create({ userId, action: 'ORDER_CANCELLED', entity: 'Order', entityId: id }, { transaction: t });
+      await t.commit();
+    } catch (err) {
+      await t.rollback();
+      throw err;
+    }
+
+    if (io) io.emit('order:updated', { orderId: id, status: 'cancelled' });
+    return order;
+  },
+};
+
+module.exports = orderService;

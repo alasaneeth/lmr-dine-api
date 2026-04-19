@@ -1,41 +1,36 @@
 'use strict';
-const { Op }           = require('sequelize');
-const BaseRepository   = require('./base.repository');
-const { User }         = require('../models');
+const { Op }      = require('sequelize');
+const Base        = require('./base.repository');
+const { User }    = require('../models');
+const { paginate }= require('../utils/pagination');
 
-class UserRepository extends BaseRepository {
-  constructor() { super(User, 'User'); }
+class UserRepository extends Base {
+  constructor() { super(User); }
 
   async findByEmail(email) {
-    return User.scope('withPassword').findOne({ where: { email } });
-  }
-
-  async findByEmailPublic(email) {
     return User.findOne({ where: { email } });
   }
 
-  async findPaginated({ offset, limit, search, role, status }) {
+  async list(query = {}) {
+    const { page, limit, offset } = paginate(query);
     const where = {};
-    if (role)   where.role   = role;
-    if (status) where.status = status;
-    if (search) {
+    if (query.role)   where.role   = query.role;
+    if (query.status) where.status = query.status;
+    if (query.search) {
       where[Op.or] = [
-        { name:  { [Op.like]: `%${search}%` } },
-        { email: { [Op.like]: `%${search}%` } },
+        { name:  { [Op.like]: `%${query.search}%` } },
+        { email: { [Op.like]: `%${query.search}%` } },
       ];
     }
-    return User.findAndCountAll({
+    const { rows, count } = await User.findAndCountAll({
       where,
       limit,
       offset,
-      order: [['created_at', 'DESC']],
+      attributes: { exclude: ['passwordHash', 'mfaSecret'] },
+      order:      [['createdAt', 'DESC']],
     });
-  }
-
-  async updateLastLogin(id) {
-    return User.update({ last_login_at: new Date() }, { where: { id } });
+    return { items: rows, total: count, page, limit };
   }
 }
 
-// Singleton instance (Singleton pattern)
 module.exports = new UserRepository();

@@ -1,38 +1,28 @@
 'use strict';
 
 /**
- * Unified API response envelope.
+ * All API responses share this envelope:
+ *   { success: true,  data: {...}, message: "..." }
+ *   { success: false, error: { message: "...", code: "...", details: [] } }
  *
- * Success:  { success: true,  data: <payload>,  meta?: <pagination> }
- * Error:    { success: false, error: { code, message, errors? } }
+ * The frontend unwraps via: res.data.data
  */
 
-const success = (res, data = null, statusCode = 200, meta = null) => {
-  const body = { success: true, data };
-  if (meta) body.meta = meta;
-  return res.status(statusCode).json(body);
-};
+const success = (res, data = null, message = 'OK', statusCode = 200) =>
+  res.status(statusCode).json({ success: true, message, data });
 
-const created = (res, data) => success(res, data, 201);
+const created = (res, data = null, message = 'Created') =>
+  success(res, data, message, 201);
 
 const noContent = (res) => res.status(204).send();
 
-const error = (res, message, statusCode = 500, code = 'INTERNAL_ERROR', errors = null) => {
-  const body = { success: false, error: { code, message } };
-  if (errors) body.error.errors = errors;
-  return res.status(statusCode).json(body);
-};
+const paginated = (res, items, total, page, limit) =>
+  success(res, { items, total, page: +page, limit: +limit, totalPages: Math.ceil(total / limit) });
 
-/**
- * Build pagination meta object from Sequelize count result.
- */
-const paginationMeta = (total, page, limit) => ({
-  total,
-  page:       parseInt(page, 10),
-  limit:      parseInt(limit, 10),
-  totalPages: Math.ceil(total / limit),
-  hasNext:    page * limit < total,
-  hasPrev:    page > 1,
-});
+const error = (res, message, statusCode = 500, code = 'INTERNAL_ERROR', details = []) =>
+  res.status(statusCode).json({
+    success: false,
+    error: { message, code, details, timestamp: new Date().toISOString() },
+  });
 
-module.exports = { success, created, noContent, error, paginationMeta };
+module.exports = { success, created, noContent, paginated, error };

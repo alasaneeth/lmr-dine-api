@@ -1,24 +1,18 @@
 'use strict';
 const { createLogger, format, transports } = require('winston');
-const path  = require('path');
-const fs    = require('fs');
-
-const LOG_DIR   = process.env.LOG_DIR   || 'logs';
-const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
-
-// Ensure log directory exists
-if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+require('winston-daily-rotate-file');
+const path = require('path');
+const cfg  = require('../config/env');
 
 const { combine, timestamp, errors, json, colorize, printf } = format;
 
 const devFormat = combine(
-  colorize({ all: true }),
+  colorize(),
   timestamp({ format: 'HH:mm:ss' }),
   errors({ stack: true }),
-  printf(({ level, message, timestamp: ts, stack, ...meta }) => {
-    const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
-    return `${ts} [${level}]: ${stack || message}${metaStr}`;
-  })
+  printf(({ level, message, timestamp: ts, stack }) =>
+    stack ? `[${ts}] ${level}: ${message}\n${stack}` : `[${ts}] ${level}: ${message}`
+  )
 );
 
 const prodFormat = combine(
@@ -27,34 +21,25 @@ const prodFormat = combine(
   json()
 );
 
+const logTransports = [new transports.Console()];
+
+if (cfg.env === 'production') {
+  const fileTransport = new transports.DailyRotateFile({
+    dirname:       path.join(cfg.log.dir),
+    filename:      'rms-%DATE%.log',
+    datePattern:   'YYYY-MM-DD',
+    maxSize:       '20m',
+    maxFiles:      '14d',
+    zippedArchive: true,
+  });
+  logTransports.push(fileTransport);
+}
+
 const logger = createLogger({
-  level: LOG_LEVEL,
-  format: process.env.NODE_ENV === 'production' ? prodFormat : devFormat,
-  transports: [
-    new transports.Console(),
-    new transports.File({
-      filename: path.join(LOG_DIR, 'error.log'),
-      level: 'error',
-      format: combine(timestamp(), errors({ stack: true }), json()),
-    }),
-    new transports.File({
-      filename: path.join(LOG_DIR, 'combined.log'),
-      format: combine(timestamp(), json()),
-    }),
-  ],
-  exceptionHandlers: [
-    new transports.File({ filename: path.join(LOG_DIR, 'exceptions.log') }),
-  ],
-  rejectionHandlers: [
-    new transports.File({ filename: path.join(LOG_DIR, 'rejections.log') }),
-  ],
+  level:  cfg.log.level,
+  format: cfg.env === 'production' ? prodFormat : devFormat,
+  transports: logTransports,
+  exitOnError: false,
 });
 
-/**
- * Morgan-compatible stream for HTTP request logging.
- */
-const httpLogStream = {
-  write: (message) => logger.http(message.trim()),
-};
-
-module.exports = { logger, httpLogStream };
+module.exports = logger;

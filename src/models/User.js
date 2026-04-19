@@ -1,76 +1,61 @@
 'use strict';
 const { DataTypes } = require('sequelize');
 
-/**
- * User model.
- * Roles: admin | waiter | cashier | customer
- */
 module.exports = (sequelize) => {
   const User = sequelize.define('User', {
     id: {
-      type:          DataTypes.UUID,
-      defaultValue:  DataTypes.UUIDV4,
+      type:          DataTypes.INTEGER.UNSIGNED,
+      autoIncrement: true,
       primaryKey:    true,
     },
     name: {
-      type:          DataTypes.STRING(100),
-      allowNull:     false,
-      validate:      { len: [2, 100] },
+      type:      DataTypes.STRING(100),
+      allowNull: false,
     },
     email: {
-      type:          DataTypes.STRING(150),
-      allowNull:     false,
-      unique:        true,
-      validate:      { isEmail: true },
+      type:      DataTypes.STRING(191),
+      allowNull: false,
+      unique:    true,
+      validate:  { isEmail: true },
     },
-    password_hash: {
-      type:          DataTypes.STRING(255),
-      allowNull:     false,
+    passwordHash: {
+      type:      DataTypes.STRING(255),
+      allowNull: false,
     },
     role: {
-      type:          DataTypes.ENUM('admin', 'waiter', 'cashier', 'customer'),
-      allowNull:     false,
-      defaultValue:  'customer',
+      type:         DataTypes.ENUM('admin', 'waiter', 'cashier', 'customer'),
+      allowNull:    false,
+      defaultValue: 'customer',
     },
     status: {
-      type:          DataTypes.ENUM('active', 'inactive', 'suspended'),
-      defaultValue:  'active',
+      type:         DataTypes.ENUM('active', 'inactive'),
+      defaultValue: 'active',
     },
-    initials: {
-      type:          DataTypes.STRING(4),
-      allowNull:     true,
+    mfaSecret: {
+      type:      DataTypes.STRING(255),
+      allowNull: true,
     },
-    mfa_secret: {
-      type:          DataTypes.STRING(64),
-      allowNull:     true,
+    mfaEnabled: {
+      type:         DataTypes.BOOLEAN,
+      defaultValue: false,
     },
-    mfa_enabled: {
-      type:          DataTypes.BOOLEAN,
-      defaultValue:  false,
-    },
-    last_login_at: {
-      type:          DataTypes.DATE,
-      allowNull:     true,
-    },
-    // Virtual – never stored
-    password: {
-      type:          DataTypes.VIRTUAL,
+    lastLoginAt: {
+      type: DataTypes.DATE,
     },
   }, {
-    tableName: 'users',
+    tableName:  'users',
+    timestamps: true,
     indexes: [
-      { unique: true, fields: ['email'] },
+      { fields: ['email'] },
       { fields: ['role'] },
       { fields: ['status'] },
     ],
-    // Never return password_hash or mfa_secret to clients
-    defaultScope: {
-      attributes: { exclude: ['password_hash', 'mfa_secret'] },
-    },
-    scopes: {
-      withPassword: { attributes: {} },
-    },
   });
+
+  User.prototype.toSafeJSON = function () {
+    const { passwordHash, mfaSecret, ...safe } = this.toJSON();
+    return safe;
+  };
 
   return User;
 };
