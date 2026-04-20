@@ -92,7 +92,9 @@ const authService = {
     stored.revokedAt = new Date();
     await stored.save();
 
-    const user = await userRepo.findByEmail((await stored.getUser()).email);
+    // Use stored.userId directly — avoids two extra DB round-trips
+    // (getUser() association fetch + findByEmail lookup).
+    const user = await userRepo.findById(stored.userId);
     const tokens = await issueTokenPair(user, { ...meta, family: stored.family });
     return { user: user.toSafeJSON(), ...tokens };
   },

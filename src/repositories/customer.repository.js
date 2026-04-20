@@ -35,6 +35,8 @@ class CustomerRepository extends Base {
       if (query.to)   invoiceWhere.paidAt[Op.lte] = new Date(query.to);
     }
     const customerWhere = {};
+    // Bug fix: support filtering by a single customer (for detail endpoints)
+    if (query.customerId) customerWhere.id = query.customerId;
     if (query.search) {
       customerWhere[Op.or] = [
         { name:  { [Op.like]: `%${query.search}%` } },
@@ -70,6 +72,8 @@ class CustomerRepository extends Base {
   async creditReport(query = {}) {
     const { page, limit, offset } = paginate(query);
     const where = { outstandingBalance: { [Op.gt]: 0 } };
+    // Bug fix: support filtering by a single customer (for detail endpoints)
+    if (query.customerId) where.id = query.customerId;
     if (query.search) {
       where[Op.or] = [
         { name:  { [Op.like]: `%${query.search}%` } },
@@ -78,6 +82,26 @@ class CustomerRepository extends Base {
     }
     const { rows, count } = await Customer.findAndCountAll({
       where, limit, offset, order: [['outstandingBalance', 'DESC']],
+    });
+    return { items: rows, total: count, page, limit };
+  }
+
+  /** Paid invoice history for a single customer */
+  async paymentHistory(customerId, query = {}) {
+    const { page, limit, offset } = paginate(query);
+    const { Invoice } = require('../models');
+    const where = { customerId };
+    if (query.status) where.status = query.status;
+    if (query.from || query.to) {
+      where.createdAt = {};
+      if (query.from) where.createdAt[Op.gte] = new Date(query.from);
+      if (query.to)   where.createdAt[Op.lte] = new Date(query.to);
+    }
+    const { rows, count } = await Invoice.findAndCountAll({
+      where,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']],
     });
     return { items: rows, total: count, page, limit };
   }

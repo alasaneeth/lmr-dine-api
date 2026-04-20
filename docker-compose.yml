@@ -1,21 +1,33 @@
 version: '3.9'
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  RMS – Docker Compose (production-ready)
+#
+#  Quick start (development):
+#    docker compose up -d
+#
+#  Production notes:
+#    • Replace the env_file values with real secrets (never commit .env to git)
+#    • Use an external reverse proxy (see nginx.conf) instead of exposing :5000
+#    • Remove the "ports" entry for mysql/redis in production (internal only)
+# ─────────────────────────────────────────────────────────────────────────────
+
 services:
   mysql:
     image: mysql:8.0
     container_name: rms_mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: rootpass
-      MYSQL_DATABASE:      rms_db
-      MYSQL_USER:          rms_user
-      MYSQL_PASSWORD:      rms_pass
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS:-rootpass}
+      MYSQL_DATABASE:      ${DB_NAME:-rms_db}
+      MYSQL_USER:          ${DB_USER:-rms_user}
+      MYSQL_PASSWORD:      ${DB_PASS:-rms_pass}
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"   # bind to loopback only – not exposed externally
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASS:-rootpass}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -24,10 +36,20 @@ services:
     image: redis:7-alpine
     container_name: rms_redis
     restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASS:-}
+      --save 60 1
+      --loglevel warning
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"   # bind to loopback only
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   backend:
     build: .
@@ -36,16 +58,28 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file: .env
     environment:
-      DB_HOST: mysql
+      # Override specific vars so the app connects to sibling containers
+      DB_HOST:    mysql
       REDIS_HOST: redis
+      NODE_ENV:   ${NODE_ENV:-production}
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"   # bind to loopback – nginx reverse-proxies from outside
     volumes:
       - ./uploads:/app/uploads
       - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5000/api/v1/health', r => process.exit(r.statusCode === 200 ? 0 : 1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
 volumes:
   mysql_data:
+    driver: local
   redis_data:
+    driver: local

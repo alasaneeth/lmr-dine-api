@@ -80,10 +80,12 @@ const customerService = {
     return c.save();
   },
   // Reports
-  salesReport:   (q)        => customerRepo.salesReport(q),
-  creditReport:  (q)        => customerRepo.creditReport(q),
-  reportSummary: (q)        => customerRepo.reportSummary(q),
-  getById:       (id)       => customerRepo.findById(id),
+  // Reports
+  salesReport:    (q)       => customerRepo.salesReport(q),
+  creditReport:   (q)       => customerRepo.creditReport(q),
+  reportSummary:  (q)       => customerRepo.reportSummary(q),
+  paymentHistory: (id, q)   => customerRepo.paymentHistory(id, q),
+  // getById already defined above — duplicate removed
 };
 
 module.exports = { stockService, userService, dashboardService, customerService };

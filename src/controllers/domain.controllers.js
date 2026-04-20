@@ -90,16 +90,24 @@ const customerController = {
     try { success(res, await customerService.salesReport(req.query)); } catch (e) { next(e); }
   },
   async customerSalesDetail(req, res, next) {
-    try { success(res, await customerService.getById(req.params.id)); } catch (e) { next(e); }
+    // Bug fix: was calling getById() – must pass customerId to scope the sales report
+    try { success(res, await customerService.salesReport({ ...req.query, customerId: req.params.id })); } catch (e) { next(e); }
   },
   async creditReport(req, res, next) {
     try { success(res, await customerService.creditReport(req.query)); } catch (e) { next(e); }
   },
   async customerCreditDetail(req, res, next) {
-    try { success(res, await customerService.getById(req.params.id)); } catch (e) { next(e); }
+    // Bug fix: was calling getById() – must pass customerId to scope the credit report
+    try { success(res, await customerService.creditReport({ ...req.query, customerId: req.params.id })); } catch (e) { next(e); }
   },
   async reportSummary(req, res, next) {
     try { success(res, await customerService.reportSummary(req.query)); } catch (e) { next(e); }
+  },
+  async customerPaymentHistory(req, res, next) {
+    try {
+      const { items, total, page, limit } = await customerService.paymentHistory(req.params.id, req.query);
+      paginated(res, items, total, page, limit);
+    } catch (e) { next(e); }
   },
 };
 

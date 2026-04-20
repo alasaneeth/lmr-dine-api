@@ -3,10 +3,13 @@ const authService         = require('../services/auth.service');
 const { success, created } = require('../utils/response');
 const cfg                 = require('../config/env');
 
+// Bug fix: 'strict' blocks the cookie on cross-subdomain requests in production
+// (e.g. app.example.com calling api.example.com). 'lax' is safe and broadly
+// compatible; still HttpOnly + Secure in production so XSS cannot read it.
 const COOKIE_OPTS = {
   httpOnly: true,
   secure:   cfg.env === 'production',
-  sameSite: 'strict',
+  sameSite: cfg.env === 'production' ? 'lax' : 'strict',
   maxAge:   7 * 24 * 60 * 60 * 1000, // 7 days
 };
 

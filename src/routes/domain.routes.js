@@ -53,7 +53,7 @@ customerRouter.get ('/reports/summary',          authorize('admin','cashier'),  
 customerRouter.get ('/:id',                      authorize('admin','cashier'),  cCtrl.getById);
 customerRouter.get ('/:id/reports/sales',        authorize('admin','cashier'),  cCtrl.customerSalesDetail);
 customerRouter.get ('/:id/reports/credit',       authorize('admin','cashier'),  cCtrl.customerCreditDetail);
-customerRouter.get ('/:id/payments',             authorize('admin','cashier'),  cCtrl.getById);
+customerRouter.get ('/:id/payments',             authorize('admin','cashier'),  cCtrl.customerPaymentHistory); // Bug fix: was cCtrl.getById — returned customer obj instead of payment history
 customerRouter.post('/',                         authorize('admin','cashier'), customerRules, validate, cCtrl.create);
 customerRouter.put ('/:id',                      authorize('admin','cashier'), customerRules, validate, cCtrl.update);
 customerRouter.patch('/:id/status',              authorize('admin'), setStatusRules, validate, cCtrl.setStatus);
